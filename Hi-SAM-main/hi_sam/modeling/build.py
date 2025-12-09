@@ -94,7 +94,7 @@ def _build_sam(
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size  # 64
 
-    checkpoint = args.checkpoint
+    checkpoint = args.hisam_checkpoint
 
     model = HiSam(
         image_encoder=ImageEncoderViT(
@@ -138,7 +138,7 @@ def _build_sam(
         pixel_std=[58.395, 57.12, 57.375],
     )
 
-    if args.hier_det:
+    if args.hisam_hier_det:
         model.hier_det = True
         model.hi_decoder = HiDecoder(
             num_multimask_outputs=3,
@@ -160,7 +160,7 @@ def _build_sam(
         dict_keys = state_dict.keys()
 
         # check whether to use the paras. of SAM's mask decoder to initialize H-Decoder
-        if args.hier_det:
+        if args.hisam_hier_det:
             contain_hi_decoder = False
             for key in dict_keys:
                 if 'hi_decoder' in key:
@@ -175,12 +175,12 @@ def _build_sam(
                     state_dict[new_key] = value
 
         # load SAM's ViT backbone paras.
-        if args.model_type == 'vit_b':
-            sam_path = os.path.join('pretrained_checkpoint', 'sam_vit_b_01ec64.pth')
-        elif args.model_type == 'vit_l':
-            sam_path = os.path.join('pretrained_checkpoint', 'sam_vit_l_0b3195.pth')
-        elif args.model_type == 'vit_h':
-            sam_path = os.path.join('pretrained_checkpoint', 'sam_vit_h_4b8939.pth')
+        if args.hisam_model_type == 'vit_b':
+            sam_path = os.path.join('Hi-SAM-main/pretrained_checkpoint', 'sam_vit_b_01ec64.pth')
+        elif args.hisam_model_type == 'vit_l':
+            sam_path = os.path.join('Hi-SAM-main/pretrained_checkpoint', 'sam_vit_l_0b3195.pth')
+        elif args.hisam_model_type == 'vit_h':
+            sam_path = os.path.join('Hi-SAM-main/pretrained_checkpoint', 'sam_vit_h_4b8939.pth')
         with open(sam_path, "rb") as f:
             sam_dict = torch.load(f)
         for key, value in sam_dict.items():
@@ -213,7 +213,7 @@ def _build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, args):
     normalize_before_activation = False
     image_embedding_size = img_size // (encoder_patch_size if encoder_patch_size > 0 else 1)
     prompt_embed_dim = 256
-    checkpoint = args.checkpoint
+    checkpoint = args.hisam_checkpoint
     
     assert activation == "relu" or activation == "gelu"
     if activation == "relu":
@@ -265,7 +265,7 @@ def _build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, args):
         pixel_std=[58.395, 57.12, 57.375],
     )
     
-    if args.hier_det:
+    if args.hisam_hier_det:
         model.hier_det = True
         model.hi_decoder = eHiDecoder(
             transformer_dim=prompt_embed_dim,
@@ -291,7 +291,7 @@ def _build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, args):
             state_dict = torch.load(f, map_location="cpu")
         if 'model' in state_dict.keys():
             state_dict = state_dict['model']
-        if args.hier_det:
+        if args.hisam_hier_det:
             contain_hi_decoder = False
             for key in state_dict.keys():
                 if 'hi_decoder' in key:

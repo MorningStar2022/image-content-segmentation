@@ -14,24 +14,18 @@ import pyclipper
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
-# 1. 获取当前脚本（final_combined.py）的绝对路径
 current_script_path = os.path.abspath(__file__)
-# 2. 获取项目根目录（image-seg）—— 即脚本所在目录
 project_root = os.path.dirname(current_script_path)
 
-# 3. 将SAM和Hi-SAM的源码目录加入Python路径（关键！）
-# 加入SAM源码根目录（segment-anything-main）
 sam_source_dir = os.path.join(project_root, "segment-anything-main")
 if sam_source_dir not in sys.path:
     sys.path.insert(0, sam_source_dir)
 
-# 加入Hi-SAM源码根目录（Hi-SAM-main）
 hisam_source_dir = os.path.join(project_root, "Hi-SAM-main")
 if hisam_source_dir not in sys.path:
     sys.path.insert(0, hisam_source_dir)
 # -------------------------- 导入模型相关模块 --------------------------
 # SAM相关
-
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 # Hi-SAM相关
@@ -62,8 +56,13 @@ def get_args_parser():
     parser.add_argument("--hisam_checkpoint", type=str, required=True, help="Hi-SAM权重路径")
     parser.add_argument("--hisam_hier_det", action='store_true', help="Hi-SAM是否启用层级检测")
     parser.add_argument("--hisam_patch_mode", action='store_true', help="Hi-SAM是否启用patch模式")
+    parser.add_argument('--input_size', default=[1024, 1024], type=list)
+    # self-prompting
+    parser.add_argument('--attn_layers', default=1, type=int,
+                        help='The number of image to token cross attention layers in model_aligner')
+    parser.add_argument('--prompt_len', default=12, type=int, help='The number of prompt token')
 
-    # 掩码优化配置
+    # 后处理配置
     parser.add_argument("--text_dilate_pixel", type=int, default=20, help="文本掩码膨胀像素数")
     parser.add_argument("--edge_white_value", type=int, default=255, help="边缘掩码白色值")
     parser.add_argument("--fill_black_value", type=int, default=0, help="重叠区域填充黑色值")
@@ -195,7 +194,6 @@ def refine_edge_mask(
     # 步骤5：保存优化后的掩码
     if save_refined_mask:
         cv2.imwrite(save_path, refined_edge_mask)
-        print(f"✅ 优化后的边缘掩码已保存：{save_path}")
 
     return refined_edge_mask
 
@@ -301,7 +299,7 @@ def run_hisam_inference(img_path, hisam_model, output_dir, hier_det=False, patch
         }
 
 
-# -------------------------- 主流程：推理 + 掩码优化 --------------------------
+# -------------------------- 主函数 --------------------------
 def main():
     args = get_args_parser()
 
@@ -330,11 +328,11 @@ def main():
     else:
         input_images = glob.glob(os.path.expanduser(args.input))
 
-    assert len(input_images) > 0, "❌ 未找到有效输入图像"
+    assert len(input_images) > 0, "未找到有效输入图像"
     print(f"\n 待处理图像数量：{len(input_images)}")
 
     # 4. 并行运行SAM + Hi-SAM推理
-    print("\n⚡ 开始并行推理（SAM + Hi-SAM）...")
+    print("\n 开始并行推理（SAM + Hi-SAM）...")
     inference_results = {}  # 存储每张图的推理结果
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         futures = {}
@@ -373,13 +371,12 @@ def main():
             else:
                 inference_results[img_name]["hisam"] = result
 
-    # 5. 掩码优化：用Hi-SAM文本掩码优化SAM边缘掩码
-    print("\n 开始优化SAM边缘掩码...")
-    for img_name in tqdm(inference_results.keys(), desc="优化进度"):
+
+    for img_name in inference_results.keys():
         res = inference_results[img_name]
         # 跳过推理失败的图像
         if res.get("sam", {}).get("status") != "success" or res.get("hisam", {}).get("status") != "success":
-            print(f"\n⚠ 跳过{img_name}：SAM/Hi-SAM推理失败")
+            print(f"\n 跳过{img_name}：SAM/Hi-SAM推理失败")
             continue
 
         # 读取掩码
@@ -399,18 +396,14 @@ def main():
         )
         inference_results[img_name]["refined_edge_mask_path"] = refined_mask_path
 
-    # 6. 输出最终结果汇总
-    print("\n 处理结果汇总：")
+
     success_count = 0
     for img_name, res in inference_results.items():
         if res.get("sam", {}).get("status") == "success" and res.get("hisam", {}).get("status") == "success":
             success_count += 1
-            print(f"✅ {img_name}：")
-            print(f"   - SAM边缘掩码：{res['sam']['sam_edge_mask_path']}")
-            print(f"   - Hi-SAM文本掩码：{res['hisam']['hisam_text_mask_path']}")
-            print(f"   - 优化后边缘掩码：{res['refined_edge_mask_path']}")
+
         else:
-            print(f"❌ {img_name}：处理失败")
+            print(f" {img_name}：处理失败")
             if res.get("sam", {}).get("status") == "failed":
                 print(f"   - SAM失败原因：{res['sam']['error']}")
             if res.get("hisam", {}).get("status") == "failed":
