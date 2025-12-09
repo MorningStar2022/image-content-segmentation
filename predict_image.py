@@ -45,7 +45,7 @@ def get_args_parser():
     parser.add_argument("--max_workers", type=int, default=2, help="并行线程数（SAM/Hi-SAM）")
 
     # SAM配置
-    parser.add_argument("--sam_model_type", type=str, default="vit_h", help="SAM模型类型 ['vit_h', 'vit_l', 'vit_b']")
+    parser.add_argument("--sam_model_type", type=str, default="vit_b", help="SAM模型类型 ['vit_h', 'vit_l', 'vit_b']")
     parser.add_argument("--sam_checkpoint", type=str, required=True, help="SAM权重路径")
     parser.add_argument("--sam_max_masks", type=int, default=300, help="SAM最大掩码数")
     parser.add_argument("--sam_transparency", type=float, default=0.3, help="SAM可视化透明度")
