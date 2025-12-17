@@ -13,23 +13,23 @@ import time  # 导入时间模块
 from typing import Optional
 
 # -------------------------- 导包路径配置 --------------------------
-current_script_path = os.path.abspath(__file__)
-project_root = os.path.dirname(current_script_path)
-
-hisam_source_dir = os.path.join(project_root, "Hi-SAM-main")
-if hisam_source_dir not in sys.path:
-    sys.path.insert(0, hisam_source_dir)
-
-mobile_sam_source_dir = os.path.join(project_root, "MobileSAM-master")
-if mobile_sam_source_dir not in sys.path:
-    sys.path.insert(0, mobile_sam_source_dir)
+# current_script_path = os.path.abspath(__file__)
+# project_root = os.path.dirname(current_script_path)
+#
+# hisam_source_dir = os.path.join(project_root, "Hi-SAM-main")
+# if hisam_source_dir not in sys.path:
+#     sys.path.insert(0, hisam_source_dir)
+#
+# mobile_sam_source_dir = os.path.join(project_root, "MobileSAM-master")
+# if mobile_sam_source_dir not in sys.path:
+#     sys.path.insert(0, mobile_sam_source_dir)
 
 # -------------------------- 导入模型相关模块 --------------------------
-from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
-from hi_sam.modeling.build import model_registry
-from hi_sam.modeling.predictor import SamPredictor
+from MobileSAM.mobile_sam import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from Hi_SAM.hi_sam.modeling.build import model_registry
+from Hi_SAM.hi_sam.modeling.predictor import SamPredictor
 
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 
 
 # -------------------------- 全局配置与工具函数 --------------------------
@@ -38,7 +38,7 @@ def get_args_parser():
     # 通用配置
     parser.add_argument("--input", type=str, required=True, help="输入图像文件夹路径")
     parser.add_argument("--output", type=str, default='./final_results', help="结果保存根目录")
-    parser.add_argument("--device", type=str, default="cuda", help="运行设备")
+    parser.add_argument("--device", type=str, default="cuda:0", help="运行设备")
 
     # SAM配置
     parser.add_argument("--sam_model_type", type=str, default="vit_t", help="SAM模型类型 ['vit_t']")
@@ -259,6 +259,7 @@ def main():
     print("\n🚀 加载模型...")
     mobile_sam = sam_model_registry[args.sam_model_type](checkpoint=args.sam_checkpoint)
     mobile_sam.to(device=args.device)
+    print("mobile_sam.device:",mobile_sam.device)
     mobile_sam.eval()
     hisam = model_registry[args.hisam_model_type](args)
     hisam.eval()
