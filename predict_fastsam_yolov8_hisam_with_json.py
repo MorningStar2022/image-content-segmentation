@@ -97,12 +97,12 @@ def add_coco_annotation(coco_data, img_id, mask, category_id):
 def get_args_parser():
     parser = argparse.ArgumentParser('Fast-SAM + Hi-SAM + 掩码优化 高效流程', add_help=False)
     # 通用配置
-    parser.add_argument("--input", type=str, required=True, help="输入图像文件夹路径")
-    parser.add_argument("--output", type=str, default='./final_results', help="结果保存根目录")
+    parser.add_argument("--input", type=str, default="./input", help="输入图像文件夹路径")
+    parser.add_argument("--output", type=str, default="./final_results", help="结果保存根目录")
     parser.add_argument("--device", type=str, default="cuda:0", help="运行设备")
 
     # Fast-SAM配置
-    parser.add_argument("--fastsam_checkpoint", type=str, required=True, help="Fast-SAM权重路径")
+    parser.add_argument("--fastsam_checkpoint", type=str, default="FastSAM/weights/FastSAM-x.pt", help="Fast-SAM权重路径")
     parser.add_argument("--fastsam_conf", type=float, default=0.4, help="Fast-SAM置信度阈值")
     parser.add_argument("--fastsam_iou", type=float, default=0.9, help="Fast-SAM IoU阈值")
     parser.add_argument("--fastsam_imgsz", type=int, default=640, help="Fast-SAM输入图像尺寸")
@@ -111,9 +111,9 @@ def get_args_parser():
     parser.add_argument("--yolo_checkpoint", type=str, default="yolo_weights/yolov8m-seg.pt",required=True, help="yolo权重路径")
 
     # Hi-SAM配置
-    parser.add_argument("--hisam_model_type", type=str, default="vit_l",
-                        help="Hi-SAM模型类型 ['vit_h', 'vit_l', 'vit_b']")
-    parser.add_argument("--hisam_checkpoint", type=str, required=True, help="Hi-SAM权重路径")
+    parser.add_argument("--hisam_model_type", type=str, default="vit_s",
+                        help="Hi-SAM模型类型 ['vit_h', 'vit_l', 'vit_b','vit_s']")
+    parser.add_argument("--hisam_checkpoint", type=str, default="Hi_SAM/pretrained_checkpoint/efficient_hi_sam_s.pth", help="Hi-SAM权重路径")
     parser.add_argument("--hisam_hier_det", action='store_true', help="Hi-SAM是否启用层级检测")
     parser.add_argument("--hisam_patch_mode", action='store_true', help="Hi-SAM是否启用patch模式")
     parser.add_argument('--input_size', default=[1024, 1024], type=list)
@@ -121,15 +121,9 @@ def get_args_parser():
     parser.add_argument('--prompt_len', default=12, type=int, help='prompt token数')
 
     # 后处理配置
-    parser.add_argument("--text_dilate_pixel", type=int, default=20, help="文本掩码膨胀像素数")
+    parser.add_argument("--text_dilate_pixel", type=int, default=10, help="文本掩码膨胀像素数")
     parser.add_argument("--edge_white_value", type=int, default=255, help="边缘掩码白色值")
     parser.add_argument("--fill_black_value", type=int, default=0, help="重叠区域填充黑色值")
-
-    # 新增person分割配置
-    parser.add_argument("--person_prompt", type=str, default="person",
-                        help="用于分割人体的文本提示词")
-    parser.add_argument("--person_conf_threshold", type=float, default=0.5,
-                        help="人体掩码置信度阈值")
 
     return parser.parse_args()
 
@@ -272,7 +266,9 @@ def run_yolov8_inference(img_path, yolo_model, device, imgsz=640, conf=0.25, iou
         results=yolo_model(image)
 
         # Create an empty mask for segmentation
-        segmentation_mask = np.zeros((img_h,img_w), dtype=np.uint8)
+        person_mask = np.zeros((img_h,img_w), dtype=np.uint8)
+        obj_mask = np.zeros((img_h,img_w), dtype=np.uint8)
+        # obj_masks = []
 
         # Iterate over the results
         for i, r in enumerate(results):
@@ -288,7 +284,13 @@ def run_yolov8_inference(img_path, yolo_model, device, imgsz=640, conf=0.25, iou
                         mask = np.array(mask, dtype=np.int32)
 
                         # Fill the segmentation mask with color (e.g., white for people)
-                        cv2.fillPoly(segmentation_mask, [mask], 255)
+                        cv2.fillPoly(person_mask, [mask], 255)
+                    elif class_id>0:
+                        mask = np.array(mask, dtype=np.int32)
+                        # obj_mask=np.zeros((img_h,img_w), dtype=np.uint8)
+                        cv2.fillPoly(obj_mask, [mask], 255)
+                        # Fill the segmentation mask with color (e.g., white for people)
+                        # obj_masks.append(obj_mask)
 
         yolo_infer_time = round((time.time() - start_time) * 1000, 1)
 
@@ -299,7 +301,8 @@ def run_yolov8_inference(img_path, yolo_model, device, imgsz=640, conf=0.25, iou
             "status": "success",
             "img_name": Path(img_path).stem,
             "img_size": (img_h, img_w),
-            "person_mask": segmentation_mask,
+            "person_mask": person_mask,
+            "obj_mask": obj_mask,
             "yolo_infer_time": yolo_infer_time
         }
     except Exception as e:
@@ -481,7 +484,8 @@ def main():
             # 获取各类掩码
             sam_edge_mask = sam_result["sam_edge_mask"]
             hisam_text_mask = hisam_result["hisam_text_mask"]
-            object_masks = sam_result["object_masks"]
+            # object_masks = sam_result["object_masks"]
+            object_masks = yolo_result["obj_mask"]
             person_mask = yolo_result["person_mask"]  # 人体掩码
             img_h, img_w = sam_result["img_size"]
 
@@ -506,9 +510,11 @@ def main():
 
             # 3. 处理物体掩码并添加到COCO
             combined_object_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-            for mask in object_masks:
-                mask_bin = (mask > 127).astype(np.uint8)
-                combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
+            mask_bin = (object_masks > 127).astype(np.uint8)
+            combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
+            # for mask in object_masks:
+            #     mask_bin = (mask > 127).astype(np.uint8)
+            #     combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
 
             text_mask_dilated = cv2.dilate(text_mask_bin, np.ones((5, 5), np.uint8), iterations=1)
             # exclude_mask = np.logical_or(text_mask_dilated, edge_mask_bin).astype(np.uint8)
@@ -521,11 +527,11 @@ def main():
             # 4. 处理人体掩码并添加到COCO
             person_mask_bin = (person_mask > 127).astype(np.uint8)
             # 应用置信度阈值过滤
-            if np.sum(person_mask_bin) > 0:
-                person_mask_path = os.path.join(args.output, f"{img_name}_person_mask.png")
-                cv2.imwrite(person_mask_path, person_mask)
-                add_coco_annotation(coco_data, img_idx + 1, person_mask_bin, 4)  # 类别4: person
-                inference_results[img_name]["person_mask_path"] = person_mask_path
+            # if np.sum(person_mask_bin) > 0:
+            person_mask_path = os.path.join(args.output, f"{img_name}_person_mask.png")
+            cv2.imwrite(person_mask_path, person_mask)
+            add_coco_annotation(coco_data, img_idx + 1, person_mask_bin, 4)  # 类别4: person
+            inference_results[img_name]["person_mask_path"] = person_mask_path
 
             # 保存COCO格式JSON文件
             coco_json_path = os.path.join(args.output, f"{img_name}_coco_annotations.json")
