@@ -46,13 +46,13 @@
 
 ```powershell
 git clone git@github.com:MorningStar2022/image-content-segmentation.git
-conda create -n "环境名" python==3.8
+conda create -n "环境名" python=3.8
 conda activate "环境名"
 pip install -r requirements.txt
 ```
 
 #### 2.下载权重文件
-
+[百度网盘](https://pan.baidu.com/s/1dWwtw2c9my-WUoBHiSKwNg?pwd=i8zj)(提取码：i8zj)
 #### 3.运行代码
 
 ```sh
