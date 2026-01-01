@@ -17,21 +17,21 @@ from typing import Optional
 from FastSAM.fastsam import FastSAM, FastSAMPrompt
 from Hi_SAM.hi_sam.modeling.build import model_registry
 from Hi_SAM.hi_sam.modeling.predictor import SamPredictor
-
+from ultralytics import YOLO
 warnings.filterwarnings("ignore")
 
 
-# -------------------------- COCO格式工具函数（修复版） --------------------------
+# -------------------------- COCO格式工具函数 --------------------------
 def init_coco_format():
-    """初始化COCO格式数据结构，新增person类别"""
+    """初始化COCO格式数据结构"""
     return {
         "info": {},
         "licenses": [],
         "categories": [
             {"id": 1, "name": "text", "supercategory": "object"},
             {"id": 2, "name": "edge", "supercategory": "object"},
-            {"id": 3, "name": "object", "supercategory": "object"},
-            {"id": 4, "name": "person", "supercategory": "object"}  # 新增person类别
+            {"id": 3, "name": "image", "supercategory": "object"},
+            {"id": 4, "name": "person", "supercategory": "object"}
         ],
         "images": [],
         "annotations": []
@@ -65,13 +65,13 @@ def mask_to_coco_rle(mask):
 def add_coco_annotation(coco_data, img_id, mask, category_id):
     """向COCO数据中添加标注"""
     if np.sum(mask) == 0:
-        print(f"⚠️ 跳过空掩码标注（类别ID: {category_id}，图像ID: {img_id}）")
+        print(f"跳过空掩码标注（类别ID: {category_id}，图像ID: {img_id}）")
         return
 
     area = int(np.sum(mask))
     where = np.argwhere(mask)
     if len(where) == 0:
-        print(f"⚠️ 掩码无有效像素（类别ID: {category_id}，图像ID: {img_id}）")
+        print(f"掩码无有效像素（类别ID: {category_id}，图像ID: {img_id}）")
         return
 
     y1, x1 = where.min(axis=0)
@@ -95,22 +95,25 @@ def add_coco_annotation(coco_data, img_id, mask, category_id):
 
 # -------------------------- 全局配置与工具函数 --------------------------
 def get_args_parser():
-    parser = argparse.ArgumentParser('Fast-SAM + Hi-SAM + 掩码优化 高效流程', add_help=False)
+    parser = argparse.ArgumentParser('Fast-SAM + Hi-SAM + YOLOv8-Seg', add_help=False)
     # 通用配置
-    parser.add_argument("--input", type=str, required=True, help="输入图像文件夹路径")
-    parser.add_argument("--output", type=str, default='./final_results', help="结果保存根目录")
+    parser.add_argument("--input", type=str, default="./input", help="输入图像文件夹路径")
+    parser.add_argument("--output", type=str, default="./final_results", help="结果保存根目录")
     parser.add_argument("--device", type=str, default="cuda:0", help="运行设备")
 
     # Fast-SAM配置
-    parser.add_argument("--fastsam_checkpoint", type=str, required=True, help="Fast-SAM权重路径")
+    parser.add_argument("--fastsam_checkpoint", type=str, default="FastSAM/weights/FastSAM-x.pt", help="Fast-SAM权重路径")
     parser.add_argument("--fastsam_conf", type=float, default=0.4, help="Fast-SAM置信度阈值")
     parser.add_argument("--fastsam_iou", type=float, default=0.9, help="Fast-SAM IoU阈值")
     parser.add_argument("--fastsam_imgsz", type=int, default=640, help="Fast-SAM输入图像尺寸")
 
+    # yolo配置
+    parser.add_argument("--yolo_checkpoint", type=str, default="yolo_weights/yolov8m-seg.pt", help="yolo权重路径")
+
     # Hi-SAM配置
-    parser.add_argument("--hisam_model_type", type=str, default="vit_l",
-                        help="Hi-SAM模型类型 ['vit_h', 'vit_l', 'vit_b']")
-    parser.add_argument("--hisam_checkpoint", type=str, required=True, help="Hi-SAM权重路径")
+    parser.add_argument("--hisam_model_type", type=str, default="vit_s",
+                        help="Hi-SAM模型类型 ['vit_h', 'vit_l', 'vit_b','vit_s']")
+    parser.add_argument("--hisam_checkpoint", type=str, default="Hi_SAM/pretrained_checkpoint/efficient_hi_sam_s.pth", help="Hi-SAM权重路径")
     parser.add_argument("--hisam_hier_det", action='store_true', help="Hi-SAM是否启用层级检测")
     parser.add_argument("--hisam_patch_mode", action='store_true', help="Hi-SAM是否启用patch模式")
     parser.add_argument('--input_size', default=[1024, 1024], type=list)
@@ -118,15 +121,9 @@ def get_args_parser():
     parser.add_argument('--prompt_len', default=12, type=int, help='prompt token数')
 
     # 后处理配置
-    parser.add_argument("--text_dilate_pixel", type=int, default=20, help="文本掩码膨胀像素数")
+    parser.add_argument("--text_dilate_pixel", type=int, default=10, help="文本掩码膨胀像素数")
     parser.add_argument("--edge_white_value", type=int, default=255, help="边缘掩码白色值")
     parser.add_argument("--fill_black_value", type=int, default=0, help="重叠区域填充黑色值")
-
-    # 新增person分割配置
-    parser.add_argument("--person_prompt", type=str, default="person",
-                        help="用于分割人体的文本提示词")
-    parser.add_argument("--person_conf_threshold", type=float, default=0.5,
-                        help="人体掩码置信度阈值")
 
     return parser.parse_args()
 
@@ -208,7 +205,7 @@ def refine_edge_mask(
 
 # -------------------------- 模型推理函数 --------------------------
 def run_fastsam_inference(img_path, fastsam_model, device, imgsz=1024, conf=0.4, iou=0.9):
-    """Fast-SAM推理：返回边缘掩码数组、原始物体掩码列表 + 推理耗时"""
+    """Fast-SAM推理：返回边缘掩码数组、原始物体掩码列表，推理耗时"""
     try:
         start_time = time.time()
         image = cv2.imread(img_path)
@@ -227,13 +224,6 @@ def run_fastsam_inference(img_path, fastsam_model, device, imgsz=1024, conf=0.4,
         prompt_process = FastSAMPrompt(img_path, everything_results, device=device)
         ann = prompt_process.everything_prompt()
 
-        person_masks = prompt_process.text_prompt(text="person")  # 使用文本提示词
-
-        # 转换为二值掩码并合并
-        combined_person_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        for mask in person_masks:
-            mask_np = mask.astype(np.uint8) * 255
-            combined_person_mask = cv2.bitwise_or(combined_person_mask, mask_np)
 
         edge_mask = np.zeros(image.shape[:2], dtype=np.uint8)
         object_masks = []
@@ -255,8 +245,7 @@ def run_fastsam_inference(img_path, fastsam_model, device, imgsz=1024, conf=0.4,
             "img_size": (img_h, img_w),
             "sam_edge_mask": edge_mask,
             "object_masks": object_masks,
-            "sam_infer_time": fastsam_infer_time,
-            "person_mask": combined_person_mask
+            "sam_infer_time": fastsam_infer_time
         }
     except Exception as e:
         return {
@@ -266,6 +255,63 @@ def run_fastsam_inference(img_path, fastsam_model, device, imgsz=1024, conf=0.4,
             "sam_infer_time": 0.0
         }
 
+def run_yolov8_inference(img_path, yolo_model, device, imgsz=640, conf=0.25, iou=0.7):
+    """yolov8推理"""
+    try:
+        start_time = time.time()
+        image = cv2.imread(img_path)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img_h, img_w = image.shape[:2]
+
+        results=yolo_model(image)
+
+        # Create an empty mask for segmentation
+        person_mask = np.zeros((img_h,img_w), dtype=np.uint8)
+        obj_mask = np.zeros((img_h,img_w), dtype=np.uint8)
+        # obj_masks = []
+
+        # Iterate over the results
+        for i, r in enumerate(results):
+            # Iterate through the detected masks
+            if r.masks is not None:
+                for j, mask in enumerate(r.masks.xy):
+                    # Convert the class tensor to an integer
+                    class_id = int(r.boxes.cls[j].item())  # Extract the class ID as an integer
+
+                    # Check if the detected class corresponds to 'person' (class ID 0)
+                    if class_id == 0:
+                        # Convert mask coordinates to an integer format for drawing
+                        mask = np.array(mask, dtype=np.int32)
+
+                        # Fill the segmentation mask with color (e.g., white for people)
+                        cv2.fillPoly(person_mask, [mask], 255)
+                    elif class_id>0:
+                        mask = np.array(mask, dtype=np.int32)
+                        # obj_mask=np.zeros((img_h,img_w), dtype=np.uint8)
+                        cv2.fillPoly(obj_mask, [mask], 255)
+                        # Fill the segmentation mask with color (e.g., white for people)
+                        # obj_masks.append(obj_mask)
+
+        yolo_infer_time = round((time.time() - start_time) * 1000, 1)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return {
+            "status": "success",
+            "img_name": Path(img_path).stem,
+            "img_size": (img_h, img_w),
+            "person_mask": person_mask,
+            "obj_mask": obj_mask,
+            "yolo_infer_time": yolo_infer_time
+        }
+    except Exception as e:
+        return {
+            "status": "failed",
+            "img_path": img_path,
+            "error": str(e),
+            "yolo_infer_time": 0.0
+        }
 
 def run_hisam_inference(img_path, hisam_model, hier_det=False, patch_mode=False):
     """Hi-SAM推理：返回文本掩码数组 + 推理耗时"""
@@ -328,17 +374,19 @@ def main():
 
     # 创建结果目录
     os.makedirs(args.output, exist_ok=True)
-    print(f"📁 结果保存目录：{args.output}")
+    print(f"结果保存目录：{args.output}")
 
     # 加载模型
-    print("\n🚀 加载模型...")
+    print("\n加载模型...")
     fastsam = FastSAM(args.fastsam_checkpoint)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     hisam = model_registry[args.hisam_model_type](args)
     hisam.eval()
     hisam.to(device)
-    print(f"✅ 模型加载完成，使用设备：{device}")
+
+    yolo_seg=YOLO(args.yolo_checkpoint)
+    print(f"模型加载完成，使用设备：{device}")
 
     # 获取输入图像列表
     input_images = []
@@ -350,22 +398,24 @@ def main():
     else:
         input_images = glob.glob(os.path.expanduser(args.input))
 
-    assert len(input_images) > 0, "❌ 未找到有效输入图像"
-    print(f"\n📸 待处理图像数量：{len(input_images)}")
+    assert len(input_images) > 0, "未找到有效输入图像"
+    print(f"\n待处理图像数量：{len(input_images)}")
 
     # 初始化时间统计变量
     total_sam_time = 0.0
     total_hisam_time = 0.0
+    total_yolo_time = 0.0
     success_sam_count = 0
     success_hisam_count = 0
+    success_yolo_count = 0
     time_stats = []
 
     # 串行运行推理
-    print("\n⚡ 开始串行推理（Fast-SAM + Hi-SAM分割）...")
+    print("\n开始串行推理...")
     inference_results = {}
     success_count = 0
 
-    for img_idx, img_path in enumerate(tqdm(input_images, desc="推理+优化进度")):
+    for img_idx, img_path in enumerate(tqdm(input_images, desc="推理")):
         img_name = Path(img_path).stem
         inference_results[img_name] = {}
 
@@ -410,24 +460,33 @@ def main():
             total_hisam_time += hisam_result["hisam_infer_time"]
             success_hisam_count += 1
 
+        yolo_result=run_yolov8_inference(img_path=img_path,yolo_model=yolo_seg,device=device)
+        inference_results[img_name]["yolo"] = yolo_result
+
+        if yolo_result["status"] == "success":
+            total_yolo_time += yolo_result["yolo_infer_time"]
+            success_yolo_count += 1
 
         # 记录单张图片耗时
         time_stats.append({
             "img_name": img_name,
             "sam_time": sam_result["sam_infer_time"],
             "hisam_time": hisam_result["hisam_infer_time"],
+            "yolo_time": yolo_result["yolo_infer_time"],
             "sam_status": sam_result["status"],
-            "hisam_status": hisam_result["status"]
+            "hisam_status": hisam_result["status"],
+            "yolo_status": yolo_result["status"]
         })
 
         # 掩码优化 + 保存 + 生成COCO标注
         if (sam_result["status"] == "success" and
-                hisam_result["status"] == "success"):
+                hisam_result["status"] == "success" and yolo_result["status"]=="success"):
             # 获取各类掩码
             sam_edge_mask = sam_result["sam_edge_mask"]
             hisam_text_mask = hisam_result["hisam_text_mask"]
-            object_masks = sam_result["object_masks"]
-            person_mask = sam_result["person_mask"]  # 人体掩码
+            # object_masks = sam_result["object_masks"]
+            object_masks = yolo_result["obj_mask"]
+            person_mask = yolo_result["person_mask"]  # 人体掩码
             img_h, img_w = sam_result["img_size"]
 
             # 1. 保存文本掩码并添加到COCO
@@ -444,33 +503,35 @@ def main():
                 fill_black_value=args.fill_black_value,
                 text_dilate_pixel=args.text_dilate_pixel
             )
-            refined_mask_path = os.path.join(args.output, f"{img_name}_refined_edge_mask.png")
+            refined_mask_path = os.path.join(args.output, f"{img_name}_edge_mask.png")
             cv2.imwrite(refined_mask_path, refined_edge_mask)
             edge_mask_bin = (refined_edge_mask > 127).astype(np.uint8)
             add_coco_annotation(coco_data, img_idx + 1, edge_mask_bin, 2)
 
             # 3. 处理物体掩码并添加到COCO
             combined_object_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-            for mask in object_masks:
-                mask_bin = (mask > 127).astype(np.uint8)
-                combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
+            mask_bin = (object_masks > 127).astype(np.uint8)
+            combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
+            # for mask in object_masks:
+            #     mask_bin = (mask > 127).astype(np.uint8)
+            #     combined_object_mask = np.logical_or(combined_object_mask, mask_bin).astype(np.uint8)
 
             text_mask_dilated = cv2.dilate(text_mask_bin, np.ones((5, 5), np.uint8), iterations=1)
-            exclude_mask = np.logical_or(text_mask_dilated, edge_mask_bin).astype(np.uint8)
-            combined_object_mask = np.logical_and(combined_object_mask, 1 - exclude_mask).astype(np.uint8)
+            # exclude_mask = np.logical_or(text_mask_dilated, edge_mask_bin).astype(np.uint8)
+            combined_object_mask = np.logical_and(combined_object_mask, 1 - text_mask_dilated).astype(np.uint8)
 
             object_mask_path = os.path.join(args.output, f"{img_name}_object_mask.png")
             cv2.imwrite(object_mask_path, combined_object_mask * 255)
             add_coco_annotation(coco_data, img_idx + 1, combined_object_mask, 3)
 
-            # 新增：4. 处理人体掩码并添加到COCO
+            # 4. 处理人体掩码并添加到COCO
             person_mask_bin = (person_mask > 127).astype(np.uint8)
             # 应用置信度阈值过滤
-            if np.sum(person_mask_bin) > 0:
-                person_mask_path = os.path.join(args.output, f"{img_name}_person_mask.png")
-                cv2.imwrite(person_mask_path, person_mask)
-                add_coco_annotation(coco_data, img_idx + 1, person_mask_bin, 4)  # 类别4: person
-                inference_results[img_name]["person_mask_path"] = person_mask_path
+            # if np.sum(person_mask_bin) > 0:
+            person_mask_path = os.path.join(args.output, f"{img_name}_person_mask.png")
+            cv2.imwrite(person_mask_path, person_mask)
+            add_coco_annotation(coco_data, img_idx + 1, person_mask_bin, 4)  # 类别4: person
+            inference_results[img_name]["person_mask_path"] = person_mask_path
 
             # 保存COCO格式JSON文件
             coco_json_path = os.path.join(args.output, f"{img_name}_coco_annotations.json")
@@ -484,11 +545,13 @@ def main():
 
             success_count += 1
         else:
-            print(f"\n⚠️ 跳过{img_name}：推理失败")
+            print(f"\n跳过{img_name}：推理失败")
             if sam_result["status"] == "failed":
                 print(f"   - Fast-SAM失败原因：{sam_result['error']}")
             if hisam_result["status"] == "failed":
                 print(f"   - Hi-SAM失败原因：{hisam_result['error']}")
+            if yolo_result["status"] == "failed":
+                print(f"   - YOLO失败原因：{yolo_result['error']}")
 
 
         # 清理显存
@@ -498,30 +561,31 @@ def main():
 
     # 时间统计结果输出
     print("\n" + "-" * 60)
-    print("📊 推理时间统计（单位：毫秒 ms）")
+    print("推理时间统计（单位：毫秒 ms）")
     print("-" * 60)
     print(f"总处理图片数：{len(input_images)}")
     print(
-        f"Fast-SAM成功推理数：{success_sam_count} | Hi-SAM成功推理数：{success_hisam_count}")
+        f"Fast-SAM成功推理数：{success_sam_count} | Hi-SAM成功推理数：{success_hisam_count}| YOLO成功推理数：{success_yolo_count}")
     print(f"Fast-SAM总耗时：{total_sam_time:.1f} ms | 平均每张：{total_sam_time / max(success_sam_count, 1):.1f} ms")
     print(f"Hi-SAM总耗时：{total_hisam_time:.1f} ms | 平均每张：{total_hisam_time / max(success_hisam_count, 1):.1f} ms")
+    print(f"YOLO总耗时：{total_yolo_time:.1f} ms | 平均每张：{total_yolo_time / max(success_yolo_count, 1):.1f} ms")
 
     # 单张图片明细
-    print("\n📋 单张图片耗时明细：")
+    print("\n单张图片耗时明细：")
     for stat in time_stats:
         status = f"Fast-SAM: {stat['sam_status']} | Hi-SAM: {stat['hisam_status']}"
         print(
-            f"  {stat['img_name']} | Fast-SAM: {stat['sam_time']:.1f}ms | Hi-SAM: {stat['hisam_time']:.1f}ms")
+            f"  {stat['img_name']} | Fast-SAM: {stat['sam_time']:.1f}ms | Hi-SAM: {stat['hisam_time']:.1f}ms| YOLO: {stat['yolo_time']:.1f}ms")
 
     # 最终结果输出
-    print("\n🎉 任务完成！成功处理 " + f"{success_count}/{len(input_images)} 张图像")
-    print(f"📁 结果保存目录：{args.output}")
-    print("📄 保存文件包括：")
-    print("   - {img_name}_hisam_text_mask.png: Hi-SAM文本掩码")
-    print("   - {img_name}_refined_edge_mask.png: 优化后的Fast-SAM边缘掩码")
-    print("   - {img_name}_object_mask.png: 物体掩码（排除文本和边缘）")
-    print("   - {img_name}_person_mask.png: 人体掩码（新增）")  # 新增
-    print("   - {img_name}_coco_annotations.json: COCO格式标注文件（包含text/edge/object/person四类别）")  # 更新
+    print("\n任务完成！成功处理 " + f"{success_count}/{len(input_images)} 张图像")
+    print(f"结果保存目录：{args.output}")
+    print("保存文件包括：")
+    print("   - {img_name}_hisam_text_mask.png: 文本掩码")
+    print("   - {img_name}_refined_edge_mask.png: 边缘掩码")
+    print("   - {img_name}_object_mask.png: 物体掩码")
+    print("   - {img_name}_person_mask.png: 人体掩码")  # 新增
+    print("   - {img_name}_coco_annotations.json: COCO格式标注文件")
 
 
 if __name__ == '__main__':

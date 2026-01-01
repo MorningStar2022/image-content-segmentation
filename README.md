@@ -56,6 +56,6 @@ pip install -r requirements.txt
 #### 3.运行代码
 
 ```sh
-python predict_fastsam_yolov8_hisam_with_json.py --input ./input --output ./final_results --fastsam_checkpoint FastSAM/weights/FastSAM-x.pt --hisam_checkpoint Hi_SAM/pretrained_checkpoint/efficient_hi_sam_s.pth --hisam_model_type vit_s --device cuda:0 --text_dilate_pixel 10 --yolo_checkpoint yolo_weights/yolov8m-seg.pt
+python predict.py --input ./input --output ./final_results01 --fastsam_checkpoint FastSAM/weights/FastSAM-x.pt --hisam_checkpoint Hi_SAM/pretrained_checkpoint/efficient_hi_sam_s.pth --hisam_model_type vit_s --device cuda:0 --text_dilate_pixel 10 --yolo_checkpoint yolo_weights/yolov8m-seg.pt
 ```
-或者直接运行predict_fastsam_yolov8_hisam_with_json.py
+或者直接运行predict.py
