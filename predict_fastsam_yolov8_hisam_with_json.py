@@ -21,7 +21,7 @@ from ultralytics import YOLO
 warnings.filterwarnings("ignore")
 
 
-# -------------------------- COCO格式工具函数（修复版） --------------------------
+# -------------------------- COCO格式工具函数 --------------------------
 def init_coco_format():
     """初始化COCO格式数据结构"""
     return {
@@ -95,7 +95,7 @@ def add_coco_annotation(coco_data, img_id, mask, category_id):
 
 # -------------------------- 全局配置与工具函数 --------------------------
 def get_args_parser():
-    parser = argparse.ArgumentParser('Fast-SAM + Hi-SAM + 掩码优化 高效流程', add_help=False)
+    parser = argparse.ArgumentParser('Fast-SAM + Hi-SAM + YOLOv8-Seg', add_help=False)
     # 通用配置
     parser.add_argument("--input", type=str, default="./input", help="输入图像文件夹路径")
     parser.add_argument("--output", type=str, default="./final_results", help="结果保存根目录")
@@ -398,7 +398,7 @@ def main():
     else:
         input_images = glob.glob(os.path.expanduser(args.input))
 
-    assert len(input_images) > 0, "❌ 未找到有效输入图像"
+    assert len(input_images) > 0, "未找到有效输入图像"
     print(f"\n待处理图像数量：{len(input_images)}")
 
     # 初始化时间统计变量
@@ -411,7 +411,7 @@ def main():
     time_stats = []
 
     # 串行运行推理
-    print("\n开始串行推理（Fast-SAM + Hi-SAM分割）...")
+    print("\n开始串行推理...")
     inference_results = {}
     success_count = 0
 
